@@ -8,12 +8,23 @@
 // const { LinkedDataSignature } = suites;
 
 import { suites } from "@digitalcredentials/jsonld-signatures";
+import { VerificationMethod } from "did-resolver";
+
+import { hash as sha256 } from '@stablelib/sha256'
+import { computeAddress } from '@ethersproject/transactions'
 
 // const base58btc = require('@digitalcredentials/base58-universal');
 // import {
 //   Ed25519VerificationKey2020
 // } from '@digitalcredentials/ed25519-verification-key-2020';
 import { EcdsaSecp256k1RecoveryMethod2020 } from "./recmethod";
+import {
+  decodeBase64url,
+  extractPublicKeyHex,
+  getEthereumAddress,
+  recoverSecp256k1PublicKey,
+  stringToBytes
+} from "@veramo/utils";
 // import suiteContext2020 from 'ed25519-signature-2020-context';
 // import suiteContext2018 from 'ed25519-signature-2018-context';
 
@@ -24,8 +35,26 @@ import { EcdsaSecp256k1RecoveryMethod2020 } from "./recmethod";
 // // multibase base58-btc header
 // const MULTIBASE_BASE58BTC_HEADER = 'z';
 
+import * as u8a from 'uint8arrays'
+
+export type JwsDetachedSigner = {
+  sign: (args: { data: Uint8Array }) => Promise<string>
+  id: string
+}
+
+export type JwsDetachedVerifier = {
+  verify: (args: { data: Uint8Array, signature: string }) => Promise<boolean>
+  id: string
+}
+
+export type EcdsaSecp256k1RecoverySignature2020Proof = {
+  jws: string,
+  type: "EcdsaSecp256k1RecoverySignature2020",
+  [x: string]: any
+}
+
 export class EcdsaSecp256k1RecoverySignature2020 extends suites.LinkedDataSignature {
-  private requiredKeyType: string;
+  private requiredKeyTypes: string[];
 
   /**
    * @param {object} options - Options hashmap.
@@ -55,7 +84,7 @@ export class EcdsaSecp256k1RecoverySignature2020 extends suites.LinkedDataSignat
    *   canonize algorithm.
    */
   constructor({ key, signer, verifier, proof, date, useNativeCanonize }: {
-    key?: any, signer?: any, verifier?: any, proof?: any, date?: any, useNativeCanonize?: boolean
+    key?: VerificationMethod, signer?: JwsDetachedSigner, verifier?: JwsDetachedVerifier, proof?: EcdsaSecp256k1RecoverySignature2020Proof, date?: any, useNativeCanonize?: boolean
   } = {}) {
     super({
       type: 'EcdsaSecp256k1RecoverySignature2020', LDKeyClass: EcdsaSecp256k1RecoveryMethod2020,
@@ -64,7 +93,7 @@ export class EcdsaSecp256k1RecoverySignature2020 extends suites.LinkedDataSignat
     });
     // Some operations may be performed with EcdsaSecp256k1VerificationKey2019.
     // So, EcdsaSecp256k1RecoveryMethod2020 is recommended, but not strictly required.
-    this.requiredKeyType = 'EcdsaSecp256k1RecoveryMethod2020';
+    this.requiredKeyTypes = ['EcdsaSecp256k1RecoveryMethod2020', 'EcdsaSecp256k1VerificationKey2019'];
   }
 
   /**
@@ -80,14 +109,15 @@ export class EcdsaSecp256k1RecoverySignature2020 extends suites.LinkedDataSignat
    * @returns {Promise<object>} Resolves with the proof containing the signature
    *   value.
    */
-  async sign({ verifyData, proof }: { verifyData: Uint8Array, proof: object }): Promise<object> {
+  async sign({
+               verifyData,
+               proof
+             }: { verifyData: Uint8Array, proof: any }): Promise<EcdsaSecp256k1RecoverySignature2020Proof> {
     if (!(this.signer && typeof this.signer.sign === 'function')) {
       throw new Error('A signer API has not been specified.');
     }
 
-    const signatureBytes = await this.signer.sign({ data: verifyData });
-    proof.proofValue =
-      MULTIBASE_BASE58BTC_HEADER + base58btc.encode(signatureBytes);
+    proof.jws = await this.signer.sign({ data: verifyData });
 
     return proof;
   }
@@ -97,111 +127,140 @@ export class EcdsaSecp256k1RecoverySignature2020 extends suites.LinkedDataSignat
    *
    * @param {object} options - The options to use.
    * @param {Uint8Array} options.verifyData - Canonicalized hashed data.
-   * @param {object} options.verificationMethod - Key object.
+   * @param {object} options.verificationMethod - Key object from DID document.
    * @param {object} options.proof - The proof to be verified.
    *
    * @returns {Promise<boolean>} Resolves with the verification result.
    */
-  async verifySignature({ verifyData, verificationMethod, proof }) {
-    const { proofValue } = proof;
-    if (!(proofValue && typeof proofValue === 'string')) {
+  async verifySignature(args: { verifyData: Uint8Array, verificationMethod: VerificationMethod, proof: EcdsaSecp256k1RecoverySignature2020Proof }): Promise<boolean> {
+    const { jws } = args.proof;
+    if (!(jws && typeof jws === 'string')) {
       throw new TypeError(
-        'The proof does not include a valid "proofValue" property.');
+        'invalid_argument: The proof does not include a valid "jws" property.');
     }
-    if (proofValue[0] !== MULTIBASE_BASE58BTC_HEADER) {
-      throw new Error('Only base58btc multibase encoding is supported.');
+    if (jws.indexOf("..") === -1) {
+      throw new TypeError("invalid_argument: not a valid rfc7797 jws.");
     }
-    const signatureBytes = base58btc.decode(proofValue.substr(1));
 
-    let { verifier } = this;
-    if (!verifier) {
-      const key = await this.LDKeyClass.from(verificationMethod);
-      verifier = key.verifier();
+    const [encodedHeader, encodedSignature] = jws.split("..");
+    const header = JSON.parse(decodeBase64url(encodedHeader));
+    if (header.alg !== "ES256K-R") {
+      throw new TypeError("invalid_argument: JWS alg is not signed with ES256K-R.");
     }
-    return verifier.verify({ data: verifyData, signature: signatureBytes });
-  }
+    if (
+      header.b64 !== false ||
+      !header.crit ||
+      !header.crit.length ||
+      header.crit[0] !== "b64"
+    ) {
+      throw new TypeError("invalid_argument: JWS Header is not in rfc7797 format (not detached).");
+    }
 
-  async assertVerificationMethod({ verificationMethod }) {
-    let contextUrl;
-    if (verificationMethod.type === 'Ed25519VerificationKey2020') {
-      contextUrl = SUITE_CONTEXT_URL;
-    } else if (verificationMethod.type === 'Ed25519VerificationKey2018') {
-      contextUrl = SUITE_CONTEXT_URL_2018;
+    let ethereumAddress: string | undefined = undefined
+    if (this.requiredKeyTypes.includes(args.verificationMethod.type)) {
+      ethereumAddress = getEthereumAddress(args.verificationMethod)
+      if (!ethereumAddress) {
+        const publicKeyHex = extractPublicKeyHex(args.verificationMethod)
+        ethereumAddress = computeAddress(publicKeyHex)
+      }
     } else {
-      throw new Error(`Unsupported key type "${verificationMethod.type}".`);
-    }
-    if (!_includesContext({
-      document: verificationMethod, contextUrl
-    })) {
-      // For DID Documents, since keys do not have their own contexts,
-      // the suite context is usually provided by the documentLoader logic
-      throw new TypeError(
-        `The verification method (key) must contain "${contextUrl}" context.`
-      );
+      throw new TypeError("invalid_argument: Cannot use this verification method provided to verify this proof, invalid type");
     }
 
-    // ensure verification method has not been revoked
-    if (verificationMethod.revoked !== undefined) {
-      throw new Error('The verification method has been revoked.');
+    if (!ethereumAddress) {
+      throw new TypeError("invalid_argument: Cannot use this verification method provided to verify this proof, missing publicKey or ethereumAddress");
     }
+
+    const dataToSign = u8a.concat([stringToBytes(encodedHeader + '.'), args.verifyData])
+    const dataHash = sha256(dataToSign)
+
+    const recoveredPublicKey = recoverSecp256k1PublicKey(dataHash, u8a.fromString(encodedSignature, "base64url"))
+    const recoveredAddress = computeAddress(recoveredPublicKey).toLowerCase()
+
+    return ethereumAddress.toLowerCase() === recoveredAddress.toLowerCase()
   }
 
-  async getVerificationMethod({ proof, documentLoader }) {
-    if (this.key) {
-      // This happens most often during sign() operations. For verify(),
-      // the expectation is that the verification method will be fetched
-      // by the documentLoader (below), not provided as a `key` parameter.
-      return this.key.export({ publicKey: true });
-    }
+  // async assertVerificationMethod({ verificationMethod }) {
+  //   let contextUrl;
+  //   if (verificationMethod.type === 'Ed25519VerificationKey2020') {
+  //     contextUrl = SUITE_CONTEXT_URL;
+  //   } else if (verificationMethod.type === 'Ed25519VerificationKey2018') {
+  //     contextUrl = SUITE_CONTEXT_URL_2018;
+  //   } else {
+  //     throw new Error(`Unsupported key type "${verificationMethod.type}".`);
+  //   }
+  //   if (!_includesContext({
+  //     document: verificationMethod, contextUrl
+  //   })) {
+  //     // For DID Documents, since keys do not have their own contexts,
+  //     // the suite context is usually provided by the documentLoader logic
+  //     throw new TypeError(
+  //       `The verification method (key) must contain "${contextUrl}" context.`
+  //     );
+  //   }
+  //
+  //   // ensure verification method has not been revoked
+  //   if (verificationMethod.revoked !== undefined) {
+  //     throw new Error('The verification method has been revoked.');
+  //   }
+  // }
 
-    let { verificationMethod } = proof;
+  // async getVerificationMethod({ proof, documentLoader }) {
+  //   if (this.key) {
+  //     // This happens most often during sign() operations. For verify(),
+  //     // the expectation is that the verification method will be fetched
+  //     // by the documentLoader (below), not provided as a `key` parameter.
+  //     return this.key.export({ publicKey: true });
+  //   }
+  //
+  //   let { verificationMethod } = proof;
+  //
+  //   if (typeof verificationMethod === 'object') {
+  //     verificationMethod = verificationMethod.id;
+  //   }
+  //
+  //   if (!verificationMethod) {
+  //     throw new Error('No "verificationMethod" found in proof.');
+  //   }
+  //
+  //   const { document } = await documentLoader(verificationMethod);
+  //
+  //   verificationMethod = typeof document === 'string' ?
+  //     JSON.parse(document) : document;
+  //
+  //   await this.assertVerificationMethod({ verificationMethod });
+  //   if (verificationMethod.type === 'Ed25519VerificationKey2018') {
+  //     verificationMethod = (await Ed25519VerificationKey2020
+  //       .fromEd25519VerificationKey2018({ keyPair: verificationMethod }))
+  //       .export({ publicKey: true, includeContext: true });
+  //   }
+  //   return verificationMethod;
+  // }
 
-    if (typeof verificationMethod === 'object') {
-      verificationMethod = verificationMethod.id;
-    }
-
-    if (!verificationMethod) {
-      throw new Error('No "verificationMethod" found in proof.');
-    }
-
-    const { document } = await documentLoader(verificationMethod);
-
-    verificationMethod = typeof document === 'string' ?
-      JSON.parse(document) : document;
-
-    await this.assertVerificationMethod({ verificationMethod });
-    if (verificationMethod.type === 'Ed25519VerificationKey2018') {
-      verificationMethod = (await Ed25519VerificationKey2020
-        .fromEd25519VerificationKey2018({ keyPair: verificationMethod }))
-        .export({ publicKey: true, includeContext: true });
-    }
-    return verificationMethod;
-  }
-
-  async matchProof({ proof, document, purpose, documentLoader, expansionMap }) {
-    if (!_includesContext({ document, contextUrl: SUITE_CONTEXT_URL })) {
-      return false;
-    }
-
-    if (!await super.matchProof({
-      proof, document, purpose, documentLoader,
-      expansionMap
-    })) {
-      return false;
-    }
-    if (!this.key) {
-      // no key specified, so assume this suite matches and it can be retrieved
-      return true;
-    }
-
-    const { verificationMethod } = proof;
-
-    // only match if the key specified matches the one in the proof
-    if (typeof verificationMethod === 'object') {
-      return verificationMethod.id === this.key.id;
-    }
-    return verificationMethod === this.key.id;
-  }
+  // async matchProof({ proof, document, purpose, documentLoader, expansionMap }) {
+  //   if (!_includesContext({ document, contextUrl: SUITE_CONTEXT_URL })) {
+  //     return false;
+  //   }
+  //
+  //   if (!await super.matchProof({
+  //     proof, document, purpose, documentLoader,
+  //     expansionMap
+  //   })) {
+  //     return false;
+  //   }
+  //   if (!this.key) {
+  //     // no key specified, so assume this suite matches and it can be retrieved
+  //     return true;
+  //   }
+  //
+  //   const { verificationMethod } = proof;
+  //
+  //   // only match if the key specified matches the one in the proof
+  //   if (typeof verificationMethod === 'object') {
+  //     return verificationMethod.id === this.key.id;
+  //   }
+  //   return verificationMethod === this.key.id;
+  // }
 }
 
 /**
@@ -214,11 +273,11 @@ export class EcdsaSecp256k1RecoverySignature2020 extends suites.LinkedDataSignat
  *
  * @returns {boolean} Returns true if document includes context.
  */
-function _includesContext({ document, contextUrl }) {
+function _includesContext({ document, contextUrl }: { document: any, contextUrl: string}) {
   const context = document['@context'];
   return context === contextUrl ||
     (Array.isArray(context) && context.includes(contextUrl));
 }
-
-Ed25519Signature2020.CONTEXT_URL = SUITE_CONTEXT_URL;
-Ed25519Signature2020.CONTEXT = suiteContext2020.contexts.get(SUITE_CONTEXT_URL);
+//
+// Ed25519Signature2020.CONTEXT_URL = SUITE_CONTEXT_URL;
+// Ed25519Signature2020.CONTEXT = suiteContext2020.contexts.get(SUITE_CONTEXT_URL);

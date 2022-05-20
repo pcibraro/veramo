@@ -1,7 +1,12 @@
 declare module '@digitalcredentials/ed25519-signature-2020'
 declare module '@digitalcredentials/ed25519-verification-key-2020'
 declare module '@digitalcredentials/jsonld'
+declare module '@digitalcredentials/vc'
+// declare module '@transmute/lds-ecdsa-secp256k1-recovery2020'
+
 declare module '@digitalcredentials/jsonld-signatures' {
+  export declare function extendContextLoader(documentLoader: (url: string) => Promise<any>): Promise<any>
+
   //
   // declare class LinkedDataSignatureDef {
   //   LDKeyClass: object
@@ -50,15 +55,15 @@ declare module '@digitalcredentials/jsonld-signatures' {
     LinkedDataSignature: {
       new({ type, proof, LDKeyClass, date, key, signer, verifier, useNativeCanonize, contextUrl }?: {
         type: string;
-        proof: object;
+        proof?: object;
         LDKeyClass: Function;
         date: any;
-        key: any;
-        signer: {
+        key?: any;
+        signer?: {
           sign: Function;
           id: string;
         };
-        verifier: {
+        verifier?: {
           verify: Function;
           id: string;
         };
@@ -194,11 +199,11 @@ declare module '@digitalcredentials/jsonld-signatures' {
     getVerificationMethod({ proof, documentLoader }: object): Promise<any>;
 
     /**
-     * @param verifyData {Uint8Array}.
-     * @param document {object} to be signed.
-     * @param proof {object}
-     * @param documentLoader {function}
-     * @param expansionMap {function}
+     * @param args.verifyData {Uint8Array}.
+     * @param args.document {object} to be signed.
+     * @param args.proof {object}
+     * @param args.documentLoader {function}
+     * @param args.expansionMap {function}
      *
      * @returns {Promise<{object}>} the proof containing the signature value.
      */
@@ -220,7 +225,13 @@ declare module '@digitalcredentials/jsonld-signatures' {
      *
      * @returns {Promise<boolean>}
      */
-    verifySignature(): Promise<boolean>;
+    verifySignature(args: {
+      verifyData: Uint8Array,
+      verificationMethod: VerificationMethod,
+      proof: any,
+      documentLoader: any,
+      expansionMap: any
+    }): Promise<boolean>;
 
     /**
      * Ensures the document to be signed contains the required signature suite
@@ -239,8 +250,6 @@ declare module '@digitalcredentials/jsonld-signatures' {
 
   import LinkedDataProof = require("@digitalcredentials/jsonld-signatures/lib/suites/LinkedDataProof");
 }
-declare module '@digitalcredentials/vc'
-declare module '@transmute/lds-ecdsa-secp256k1-recovery2020'
 
 declare module "*.json" {
   const content: any;

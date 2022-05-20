@@ -44,3 +44,11 @@ export function hexToBytes(s: string): Uint8Array {
 export function bytesToHex(b: Uint8Array): string {
   return u8a.toString(b, 'base16')
 }
+
+export function stringToBytes(s: string): Uint8Array {
+  return u8a.fromString(s, 'utf-8')
+}
+
+export function bytesToString(b: Uint8Array): string {
+  return u8a.toString(b, 'utf-8')
+}

@@ -9,13 +9,11 @@ import {
 } from '@veramo/core'
 import fetch from 'cross-fetch'
 import Debug from 'debug'
-import { extendContextLoader, purposes } from '@digitalcredentials/jsonld-signatures'
+import { extendContextLoader } from '@digitalcredentials/jsonld-signatures'
 import * as vc from '@digitalcredentials/vc'
 import { LdContextLoader } from './ld-context-loader'
 import { LdSuiteLoader } from './ld-suite-loader'
 import { RequiredAgentMethods } from './ld-suites'
-
-const AssertionProofPurpose = purposes.AssertionProofPurpose
 
 const debug = Debug('veramo:w3c:ld-credential-module')
 
@@ -135,7 +133,6 @@ export class LdCredentialModule {
       challenge,
       domain,
       documentLoader,
-      purpose: new AssertionProofPurpose(),
       compactProof: false,
     })
   }
@@ -159,7 +156,6 @@ export class LdCredentialModule {
       credential,
       suite: this.ldSuiteLoader.getAllSignatureSuites().map((x) => x.getVerificationSuiteInstance()),
       documentLoader: this.getDocumentLoader(context, fetchRemoteContexts),
-      purpose: new AssertionProofPurpose(),
       compactProof: false,
       checkStatus: checkStatusFn,
     })
@@ -187,7 +183,6 @@ export class LdCredentialModule {
       documentLoader: this.getDocumentLoader(context, fetchRemoteContexts),
       challenge,
       domain,
-      purpose: new AssertionProofPurpose(),
       compactProof: false,
     })
 
